@@ -1,0 +1,9 @@
+flask==3.1.0
+redis==5.2.1
+celery==5.4.0
+psutil==6.1.1
+docker==7.1.0
+prometheus-client==0.21.1
+requests==2.32.3
+rich==13.9.4
+gunicorn==23.0.0
