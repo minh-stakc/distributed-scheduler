@@ -1,0 +1,113 @@
+version: "3.9"
+
+services:
+  # -------------------------------------------------------------------
+  # Redis -- message broker and state store
+  # -------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - scheduler_net
+
+  # -------------------------------------------------------------------
+  # Scheduler -- dispatcher + REST API + metrics
+  # -------------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python main.py --mode scheduler
+    ports:
+      - "5000:5000"    # REST API
+      - "5001:5001"    # Dashboard
+      - "8000:8000"    # Prometheus metrics
+    environment:
+      - APP_ENV=docker
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SCHEDULER_ALGORITHM=least_loaded
+      - API_HOST=0.0.0.0
+      - API_PORT=5000
+      - DASHBOARD_HOST=0.0.0.0
+      - DASHBOARD_PORT=5001
+      - PROMETHEUS_PORT=8000
+      - WORKER_HEARTBEAT_TIMEOUT=15
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - scheduler_net
+
+  # -------------------------------------------------------------------
+  # Workers -- task executors (scale with --scale worker=N)
+  # -------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      python main.py --mode worker
+    environment:
+      - APP_ENV=docker
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - WORKER_MAX_CONCURRENT_TASKS=4
+      - WORKER_HEARTBEAT_INTERVAL=5
+    depends_on:
+      redis:
+        condition: service_healthy
+      scheduler:
+        condition: service_healthy
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    networks:
+      - scheduler_net
+
+  # -------------------------------------------------------------------
+  # Prometheus -- metrics scraping
+  # -------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    depends_on:
+      - scheduler
+    networks:
+      - scheduler_net
+
+volumes:
+  redis_data:
+  prometheus_data:
+
+networks:
+  scheduler_net:
+    driver: bridge
